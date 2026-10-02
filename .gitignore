@@ -1,0 +1,17 @@
+.venv/
+.swanlab/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+datasets/
+runs/
+logs/
+private/
+upstream/
+*.parquet
+*.safetensors
+*.pt
+*.pth
+data/audit.json
+data/manifest.json

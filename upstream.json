@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/verl-project/verl.git",
+  "commit": "8718ca30a3f002f93b7c4fd99b9b2506718681bc",
+  "pull_request": "https://github.com/verl-project/verl/pull/8010",
+  "dataset": {
+    "repository": "open-r1/DAPO-Math-17k-Processed",
+    "revision": "31dd309567e3da778038cc87d868b6097a3ccf68",
+    "config": "all",
+    "split": "train"
+  }
+}

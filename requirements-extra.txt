@@ -1,0 +1,2 @@
+# Installed into the dedicated uv environment after the frozen upstream sync.
+swanlab==0.10.0
