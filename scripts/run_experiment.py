@@ -69,7 +69,7 @@ def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python:
         "data.return_raw_chat": True,
         "data.shuffle": True,
         "data.seed": a.seed,
-        "data.dataloader_num_workers": 4,
+        "data.dataloader_num_workers": 0,
         "+data.apply_chat_template_kwargs.enable_thinking": not smoke,
         "algorithm.adv_estimator": "grpo",
         "algorithm.norm_adv_by_std_in_grpo": False,
@@ -255,6 +255,7 @@ def main() -> int:
         "XDG_CACHE_HOME": str(a.root / "cache" / "xdg"),
         "TMPDIR": str(a.root / "tmp"),
         "SWANLAB_MODE": a.swanlab_mode,
+        "SWANLAB_PUBLIC": "false",
         "SWANLAB_LOG_DIR": str(run_dir / "swanlog"),
         "VERL_FILE_LOGGER_PATH": str(run_dir / "metrics.jsonl"),
     })
