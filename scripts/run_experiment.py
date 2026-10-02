@@ -26,6 +26,7 @@ def arguments() -> argparse.Namespace:
     p.add_argument("--mode", choices=["sync", "separate_async"], default="sync")
     p.add_argument("--stage", choices=["smoke", "pilot", "main"], default="smoke")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--name", help="Optional readable SwanLab experiment name")
     p.add_argument("--steps", type=int)
     p.add_argument("--gpus", help="Explicit comma-separated local GPU indices")
     p.add_argument("--root", type=Path, default=Path("/mnt/data2/Palind/score-centering-repro"))
@@ -37,6 +38,15 @@ def arguments() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="Print command, do not access GPUs or create a run")
     p.add_argument("--config-only", action="store_true", help="Resolve Hydra config without launching Ray")
     return p.parse_args()
+
+
+def display_name(a: argparse.Namespace) -> str:
+    if getattr(a, "name", None):
+        return a.name
+    method = {"pg": "PG", "tis": "TIS", "sc": "SC", "sc_tis": "SC+TIS"}[a.method]
+    mode = "同步" if a.mode == "sync" else "异步"
+    stage = {"smoke": "链路测试", "pilot": "试跑", "main": "对照实验"}[a.stage]
+    return f"Qwen3-4B · {method} · {mode}{stage} · Seed {a.seed}"
 
 
 def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python: Path) -> list[str]:
@@ -147,7 +157,7 @@ def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python:
         "reward.num_workers": 4,
         "trainer.logger": ["console", "file", "swanlab"],
         "trainer.project_name": "verl-score-centering-repro",
-        "trainer.experiment_name": run_dir.name,
+        "trainer.experiment_name": display_name(a),
         "trainer.nnodes": 1,
         "trainer.n_gpus_per_node": trainer_gpus,
         "trainer.total_epochs": 100,
@@ -274,7 +284,7 @@ def main() -> int:
         ray_tmp.symlink_to(run_dir / "ray", target_is_directory=True)
         dataset_manifest = a.root / "datasets" / "prepared" / "manifest.json"
         manifest_sha = hashlib.sha256(dataset_manifest.read_bytes()).hexdigest()
-        record = {"run_id": run_id, "stage": a.stage, "method": a.method, "mode": a.mode,
+        record = {"run_id": run_id, "display_name": display_name(a), "stage": a.stage, "method": a.method, "mode": a.mode,
                   "seed": a.seed, "command": command, "hardware": hardware,
                   "dataset_manifest_sha256": manifest_sha, "ray_tmp": str(ray_tmp),
                   "note": "Smoke uses shorter responses and thinking disabled; not a benchmark result."}
