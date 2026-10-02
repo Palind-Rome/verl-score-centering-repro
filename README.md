@@ -11,9 +11,10 @@ four training GPUs and four rollout GPUs. This extends the upstream PR's
 small-model experiment; it is not an exact replication of the paper's JAX
 experiments or its FP8 hardware configuration.
 
-Current validation: 43 reward-parser tests pass; data conversion yields 17,398
-training rows and 30 rows in each AIME evaluation set. Environment and GPU
-end-to-end checks are tracked separately; these counts are not training results.
+Data conversion yields 17,398 training rows and 30 rows in each AIME evaluation
+set. Thirty upstream reward-routing, scoring, and label-contract tests pass.
+Environment and GPU end-to-end checks are tracked separately; these checks are
+not training results.
 
 ## Environment
 
@@ -45,17 +46,21 @@ instructions and records source revisions, file hashes, duplicates, conflicting
 labels, and train/evaluation overlap. AIME24 and AIME25 are evaluation inputs,
 not training inputs. See `scripts/prepare_data.py --help` for preparation options.
 
-The reward function extracts an explicitly marked final integer answer and
-returns a signed correctness reward. Its parsing rules and failure diagnostics
-are covered by tests. It is independently defined here because the previous
-experiment's private reward implementation is unavailable.
+Scoring uses the pinned upstream `verl.utils.reward_score.math_dapo` through
+verl's default reward routing, with no custom reward function. Training uses
+`math_dapo`; evaluation sources start with `aime`. The upstream scorer checks
+the final 300 characters, prioritizes `Answer:`, and falls back to a boxed
+answer only when no Answer prediction was extracted. It returns +1/-1 reward
+and a separate accuracy field. We add no thinking-tag or overlength penalty.
+Generated text is retained for separate truncation/repetition diagnostics.
 
 ## Checks and execution
 
 ```bash
 PY="$SC_ROOT/envs/verl/bin/python"
+"$PY" scripts/prepare_data.py --upstream ../verl --output-dir "$SC_ROOT/datasets/prepared"
 "$PY" scripts/validate_config.py --upstream ../verl --root "$SC_ROOT"
-"$PY" -m pytest tests/test_reward.py
+VERL_SOURCE="$(realpath ../verl)" "$PY" -m pytest tests/test_reward.py
 "$PY" scripts/run_experiment.py --stage smoke --mode sync --method sc_tis \
   --root "$SC_ROOT" --upstream ../verl --model /path/to/Qwen3-4B
 ```

@@ -141,7 +141,7 @@ def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python:
         "actor_rollout_ref.rollout.val_kwargs.temperature": 1.0,
         "actor_rollout_ref.rollout.val_kwargs.top_p": 1.0,
         "actor_rollout_ref.rollout.val_kwargs.top_k": -1,
-        "reward.custom_reward_function.path": str(REPO / "sc_repro" / "reward.py"),
+        "reward.custom_reward_function.path": None,
         "reward.custom_reward_function.name": "compute_score",
         "reward.reward_manager.name": "naive",
         "reward.num_workers": 4,
@@ -191,7 +191,7 @@ def preflight(a: argparse.Namespace, gpu_ids: list[int]) -> dict:
         raise RuntimeError("Base model shard missing")
     prepared = a.root / "datasets" / "prepared"
     manifest = json.loads((prepared / "manifest.json").read_text())
-    current_reward = hashlib.sha256((REPO / "sc_repro" / "reward.py").read_bytes()).hexdigest()
+    current_reward = hashlib.sha256((a.upstream / "verl/utils/reward_score/math_dapo.py").read_bytes()).hexdigest()
     if manifest["conversion"]["reward_sha256"] != current_reward:
         raise RuntimeError("Reward code changed since dataset preparation; regenerate the manifest")
     expected_sources = json.loads((REPO / "data" / "sources.lock.json").read_text())["sources"]
