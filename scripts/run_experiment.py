@@ -258,6 +258,10 @@ def main() -> int:
         "SWANLAB_LOG_DIR": str(run_dir / "swanlog"),
         "VERL_FILE_LOGGER_PATH": str(run_dir / "metrics.jsonl"),
     })
+    cuda_home = python.parent.parent / "lib/python3.12/site-packages/nvidia/cu13"
+    if (cuda_home / "bin/nvcc").is_file():
+        env["CUDA_HOME"] = str(cuda_home)
+        env["PATH"] = str(cuda_home / "bin") + os.pathsep + env.get("PATH", "")
     if a.config_only:
         return subprocess.call(command, cwd=REPO, env=env)
     a.root.mkdir(parents=True, exist_ok=True)
