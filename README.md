@@ -91,6 +91,26 @@ For cloud tracking, log in locally from this repository directory:
 Use `--method pg`, `tis`, `sc`, or `sc_tis`. `--dry-run` prints the command;
 `--config-only` resolves the Hydra configuration without starting Ray.
 
+To run the four formal arms sequentially, use `scripts/run_matrix.py`. It uses
+200 steps and seed 42 by default, in the order SC+TIS, SC, TIS, PG. Each arm
+starts from the base model. To adopt an already-running first formal arm:
+
+```bash
+"$PY" scripts/run_matrix.py --root "$SC_ROOT" --upstream ../verl \
+  --model /path/to/Qwen3-4B --first-run /path/to/existing-formal-run --dry-run
+# Remove --dry-run and run under nohup to keep the queue alive after disconnecting.
+```
+
+The queue does not relaunch an adopted or completed arm. It records progress in
+`SC_ROOT/matrices/<id>/state.json`, requires the preceding arm to finish its full
+step budget, and stops on process failure or nonfinite core optimization metrics.
+Low rewards and finite zero gradients remain experiment outcomes. Nonfinite
+auxiliary diagnostics are recorded separately. When numerical failure requires
+termination, only the exact recorded run's verified driver process group is
+signaled. The queue checks GPU availability before each subsequent run and never
+kills another task to acquire GPUs. Keep the launcher unchanged while the queue
+is active; its hash is checked throughout the run.
+
 Every run has a new output directory containing launch metadata, full console
 logs, `metrics.jsonl`, generated validation/rollout text, and checkpoints when
 enabled. The launcher checks the upstream revision and GPU occupancy, takes a
