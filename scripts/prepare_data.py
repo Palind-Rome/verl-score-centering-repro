@@ -245,6 +245,29 @@ def main() -> None:
                 "Fractions, decimals, expressions, alternative answers, unfinished think blocks, and prose after the "
                 "final answer are parse failures, including a correct boxed answer followed by a summary sentence."
             ),
+            "thinking_policy": {
+                "require_think_end_default": False,
+                "description": (
+                    "Tags are diagnostic by default: valid direct answers are accepted, while an explicit unclosed "
+                    "<think> is rejected. Optional reward_kwargs.require_think_end=true rejects all responses "
+                    "missing </think>, including when the opening token was supplied by the prompt. "
+                    "No additional mandatory thinking-format penalty is enabled before inspecting generated samples."
+                ),
+                "qwen3_tokenizer_observation": (
+                    "Existing Qwen3-4B tokenizer_config marks token 151667 <think> and token 151668 </think> "
+                    "as special=false. The generation template with enable_thinking=true ends with assistant newline "
+                    "without a prefilled <think>; false prefills an empty closed thinking block."
+                ),
+                "observed_decode_probe": {
+                    "transformers_version": "4.57.6",
+                    "method": "AutoTokenizer from existing local Qwen3-4B; local_files_only=true; skip_special_tokens=true",
+                    "cases": [
+                        {"input_ids": [151667, 151668], "decoded": "<think></think>"},
+                        {"input_ids": [151644, 151667, 151668, 151645], "decoded": "<think></think>"},
+                    ],
+                    "scope": "Observed once on the experiment's existing tokenizer; conversion does not rerun this tokenizer probe",
+                },
+            },
         },
         "outputs": outputs,
         "audit": {"filename": report_path.name, **file_info(report_path),

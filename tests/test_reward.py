@@ -76,3 +76,34 @@ def test_verl_dynamic_module_loading_without_sys_modules_registration():
     assert name not in sys.modules
     spec.loader.exec_module(module)
     assert module.compute_score("math_dapo", "Answer: 42", "42")["score"] == 1.0
+
+
+@pytest.mark.parametrize("text", ["Reasoning\nAnswer: 42", r"Reasoning ends with \boxed{42}"])
+def test_optional_thinking_guard_rejects_missing_close_without_opening_tag(text):
+    result = compute_score("math_dapo", text, "42", require_think_end=True)
+    assert result["score"] == -1.0
+    assert result["unfinished_thinking"] == 1.0
+    assert result["think_start_present"] == 0.0
+    assert result["think_end_present"] == 0.0
+
+
+@pytest.mark.parametrize("prefix", ["<think>Reasoning", "Reasoning without an opening token"])
+def test_optional_guard_accepts_closed_reasoning_and_only_scores_final_answer(prefix):
+    result = compute_score("math_dapo", prefix + "\nAnswer: 9\n</think>\nAnswer: 42", "42",
+                           require_think_end=True)
+    assert result["score"] == 1.0
+    assert result["think_end_present"] == 1.0
+    assert result["think_start_present"] == float(prefix.startswith("<think>"))
+
+
+def test_default_allows_direct_answers_but_logs_absent_tags():
+    result = compute_score("math_dapo", "Answer: 42", "42")
+    assert result["score"] == 1.0
+    assert result["think_start_present"] == result["think_end_present"] == result["unfinished_thinking"] == 0.0
+
+
+def test_explicit_unclosed_thinking_is_rejected_with_default_policy():
+    result = compute_score("math_dapo", "<think>Reasoning\nAnswer: 42", "42")
+    assert result["score"] == -1.0
+    assert result["think_start_present"] == result["unfinished_thinking"] == 1.0
+    assert result["think_end_present"] == 0.0

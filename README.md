@@ -11,7 +11,7 @@ four training GPUs and four rollout GPUs. This extends the upstream PR's
 small-model experiment; it is not an exact replication of the paper's JAX
 experiments or its FP8 hardware configuration.
 
-Current validation: 37 reward-parser tests pass; data conversion yields 17,398
+Current validation: 43 reward-parser tests pass; data conversion yields 17,398
 training rows and 30 rows in each AIME evaluation set. Environment and GPU
 end-to-end checks are tracked separately; these counts are not training results.
 

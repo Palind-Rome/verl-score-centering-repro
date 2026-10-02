@@ -53,11 +53,18 @@ def _unwrap_integer(text: str) -> int | None:
         return None
 
 
-def extract_final_integer(solution_str: str) -> ParsedAnswer:
-    """Parse the final declared answer, refusing unfinished reasoning and suffixes."""
+def extract_final_integer(solution_str: str, *, require_think_end: bool = False) -> ParsedAnswer:
+    """Parse the final declared answer, refusing unfinished reasoning and suffixes.
+
+    ``require_think_end`` is an opt-in guard for prompts that prefill thinking or
+    runs that explicitly require a closed thinking section. It is false by
+    default: a valid direct answer need not contain thinking tags.
+    """
     if not isinstance(solution_str, str):
         return ParsedAnswer(None, "none", "invalid_response")
     text = solution_str.strip()
+    if require_think_end and "</think>" not in text:
+        return ParsedAnswer(None, "none", "unfinished_thinking")
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[1].strip()
     if "<think>" in text:
@@ -113,6 +120,7 @@ def compute_score(
     solution_str: str,
     ground_truth: str | int,
     extra_info: dict | None = None,
+    require_think_end: bool = False,
     **kwargs: object,
 ) -> dict[str, float]:
     """verl custom-reward contract: signed score and numeric diagnostics.
@@ -120,10 +128,12 @@ def compute_score(
     Invalid ground truth raises: dataset bugs must not silently become negative
     rewards. ``acc`` is 0/1 and is the validation accuracy; ``score`` is +/-1.
     Additional kwargs support both naive and asynchronous reward managers.
+    Thinking tags are diagnostic by default. An explicit unclosed ``<think>``
+    is rejected; absent tags are allowed unless ``require_think_end=True``.
     """
     del data_source, extra_info, kwargs
     expected = canonical_integer(ground_truth)
-    parsed = extract_final_integer(solution_str)
+    parsed = extract_final_integer(solution_str, require_think_end=require_think_end)
     correct = parsed.value is not None and parsed.value == expected
     valid = parsed.value is not None
     return {
@@ -134,5 +144,7 @@ def compute_score(
         "answer_format": float(valid and parsed.format == "answer"),
         "boxed_format": float(valid and parsed.format == "boxed"),
         "unfinished_thinking": float(parsed.error == "unfinished_thinking"),
+        "think_start_present": float("<think>" in solution_str),
+        "think_end_present": float("</think>" in solution_str),
         "response_repetition": response_repetition(solution_str),
     }
