@@ -119,3 +119,36 @@ def test_all_commands_start_main_from_base_with_expected_shared_settings(tmp_pat
         assert command[command.index("--seed") + 1] == "42"
         assert command[command.index("--model") + 1] == str(a.model)
         assert "--first-run" not in command
+
+
+def test_resumed_arm_restores_matching_parent_and_counts_only_remaining_steps(tmp_path):
+    parent = write_run(tmp_path)
+    old = json.loads((parent/'launch.json').read_text())
+    old['dataset_manifest_sha256']='same'
+    (parent/'launch.json').write_text(json.dumps(old))
+    run = tmp_path/'runs'/'continued';run.mkdir()
+    source = parent/'checkpoints/global_step_200'
+    command = [x for x in old['command'] if not x.startswith(('trainer.total_training_steps=', 'trainer.resume_mode=', 'trainer.default_local_dir='))]
+    command += ['trainer.total_training_steps=500','trainer.resume_mode="resume_path"',
+                'trainer.resume_from_path='+json.dumps(str(source)),
+                'trainer.default_local_dir='+json.dumps(str(run/'checkpoints'))]
+    new={**old,'command':command,'start_step':200,'resume_from_checkpoint':str(source)}
+    (run/'launch.json').write_text(json.dumps(new));(run/'exit.json').write_text('{"returncode":0}')
+    data=json.loads((parent/'metrics.jsonl').read_text().splitlines()[0])['data']
+    (run/'metrics.jsonl').write_text(''.join(json.dumps({'step':s,'data':data})+'\n' for s in range(201,501)))
+    assert matrix.verify_completion(run,'sc_tis',42,500)['training_steps']==300
+    new['method']='sc';(run/'launch.json').write_text(json.dumps(new))
+    with pytest.raises(RuntimeError,match='lineage'):
+        matrix.validate_run(run,'sc',42,500)
+
+
+def test_resume_sources_are_assigned_only_to_their_own_methods(tmp_path):
+    a=settings(tmp_path,list(matrix.METHODS));a.steps=500
+    a.resume_checkpoints={'sc_tis':tmp_path/'global_step_200','sc':tmp_path/'global_step_20'}
+    entries=matrix.planned_entries(a)
+    for e in entries:
+        c=e['command']
+        assert c[c.index('--steps')+1]=='500'
+        if e['method'] in a.resume_checkpoints:
+            assert c[c.index('--resume-from-checkpoint')+1]==str(a.resume_checkpoints[e['method']])
+        else:assert '--resume-from-checkpoint' not in c

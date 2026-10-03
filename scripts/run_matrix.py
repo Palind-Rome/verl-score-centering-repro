@@ -59,7 +59,21 @@ def validate_run(run_dir: Path, method: str, seed: int, steps: int, model: Path 
         if launch.get(key) != expected:
             raise RuntimeError(f"{run_dir}: {key} must be {expected!r}, got {launch.get(key)!r}")
     overrides = command_overrides(launch.get("command", []))
-    for key, expected in {"trainer.total_training_steps": steps, "trainer.resume_mode": "disable",
+    source = launch.get("resume_from_checkpoint")
+    start_step = launch.get("start_step", 0)
+    if source:
+        if Path(source).parent.parent.parent != run_dir.parent or not Path(source).name.startswith("global_step_"):
+            raise RuntimeError("Resume checkpoint must belong to the same runs root")
+        if start_step != int(Path(source).name.split("global_step_")[-1]) or not 0 < start_step < steps:
+            raise RuntimeError("Invalid continuation start step")
+        parent = json.loads((Path(source).parent.parent / "launch.json").read_text())
+        if parent['method'] != method or parent['seed'] != seed or parent['dataset_manifest_sha256'] != launch['dataset_manifest_sha256']:
+            raise RuntimeError("Continuation lineage differs in method, seed or data")
+        if overrides.get('trainer.resume_from_path') != source:
+            raise RuntimeError("Resume path differs from launch metadata")
+    elif start_step != 0:
+        raise RuntimeError("Nonzero start step requires a checkpoint")
+    for key, expected in {"trainer.total_training_steps": steps, "trainer.resume_mode": "resume_path" if source else "disable",
                           "trainer.v1.trainer_mode": "separate_async"}.items():
         if overrides.get(key) != expected:
             raise RuntimeError(f"{run_dir}: {key} must be {expected!r}, got {overrides.get(key)!r}")
@@ -77,7 +91,7 @@ def validate_run(run_dir: Path, method: str, seed: int, steps: int, model: Path 
     return launch
 
 
-def inspect_metrics(run_dir: Path, method: str, steps: int, *, finished: bool = False) -> dict:
+def inspect_metrics(run_dir: Path, method: str, steps: int, *, finished: bool = False, start_step: int = 0) -> dict:
     """Inspect complete JSONL records; tolerate only an unfinished final write."""
     path = run_dir / "metrics.jsonl"
     raw = path.read_bytes() if path.exists() else b""
@@ -100,8 +114,8 @@ def inspect_metrics(run_dir: Path, method: str, steps: int, *, finished: bool = 
         if not any(key.startswith("actor/") for key in data):
             continue
         step = row.get("step")
-        if isinstance(step, bool) or not isinstance(step, int) or not 1 <= step <= steps:
-            raise RuntimeError(f"Unexpected training step {step!r}; expected 1..{steps}")
+        if isinstance(step, bool) or not isinstance(step, int) or not start_step < step <= steps:
+            raise RuntimeError(f"Unexpected training step {step!r}; expected {start_step+1}..{steps}")
         core = required + tuple(key for key in ACTOR_OPTIONAL if key in data)
         for key in core:
             value = data.get(key)
@@ -114,7 +128,7 @@ def inspect_metrics(run_dir: Path, method: str, steps: int, *, finished: bool = 
             if key not in core and (value is None or isinstance(value, (int, float)) and not math.isfinite(value)):
                 diagnostic_nonfinite.append({"step": step, "key": key, "value": repr(value)})
         training_steps.add(step)
-    expected = set(range(1, steps + 1))
+    expected = set(range(start_step + 1, steps + 1))
     if finished and training_steps != expected:
         missing = sorted(expected - training_steps)
         raise RuntimeError(f"Expected all {steps} training steps; observed {len(training_steps)}; missing {missing[:12]}")
@@ -123,11 +137,11 @@ def inspect_metrics(run_dir: Path, method: str, steps: int, *, finished: bool = 
 
 
 def verify_completion(run_dir: Path, method: str, seed: int, steps: int, model: Path | None = None) -> dict:
-    validate_run(run_dir, method, seed, steps, model)
+    launch = validate_run(run_dir, method, seed, steps, model)
     result = json.loads((run_dir / "exit.json").read_text())
     if result.get("returncode") != 0:
         raise RuntimeError(f"Run exited unsuccessfully: {result.get('returncode')!r}")
-    return inspect_metrics(run_dir, method, steps, finished=True)
+    return inspect_metrics(run_dir, method, steps, finished=True, start_step=launch.get('start_step', 0))
 
 
 def driver_identity(run_dir: Path) -> tuple[int, str] | None:
@@ -215,9 +229,13 @@ def wait_for_free_gpus(previous_run: Path | None, timeout: int, poll: int):
 
 
 def build_command(a, method: str) -> list[str]:
-    return [str(a.python), str(LAUNCHER), "--stage", "main", "--mode", "separate_async",
+    command = [str(a.python), str(LAUNCHER), "--stage", "main", "--mode", "separate_async",
             "--method", method, "--steps", str(a.steps), "--seed", str(a.seed), "--swanlab-mode", "cloud",
             "--root", str(a.root), "--upstream", str(a.upstream), "--python", str(a.python), "--model", str(a.model)]
+    source = getattr(a, 'resume_checkpoints', {}).get(method)
+    if source:
+        command += ['--resume-from-checkpoint', str(source)]
+    return command
 
 
 def planned_entries(a) -> list[dict]:
@@ -300,7 +318,7 @@ def run_queue(a, matrix_dir: Path, state: dict):
         while True:
             assert_launcher_unchanged(state)
             try:
-                progress = inspect_metrics(run_dir, entry["method"], a.steps)
+                progress = inspect_metrics(run_dir, entry["method"], a.steps, start_step=launch.get('start_step',0))
             except RuntimeError as error:
                 try:
                     action = terminate_verified_driver(run_dir)
@@ -349,7 +367,8 @@ def parse_args():
     parser.add_argument("--model", type=Path, default=Path("/mnt/data1/ckpts/chy/models/Qwen/Qwen3-4B"))
     parser.add_argument("--methods", default=",".join(METHODS))
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--steps", type=int, default=200)
+    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--resume-checkpoint", action='append', default=[], metavar='METHOD=PATH')
     parser.add_argument("--first-run", type=Path)
     parser.add_argument("--resume-matrix", type=Path)
     parser.add_argument("--poll-seconds", type=int, default=20, choices=range(15, 31))
@@ -361,6 +380,12 @@ def parse_args():
     a.model = a.model.resolve()
     a.python = (a.python or a.root / "envs/verl/bin/python").absolute()
     a.methods = a.methods.split(",")
+    a.resume_checkpoints = {}
+    for item in a.resume_checkpoint:
+        method, source = item.split('=', 1)
+        if method not in METHODS or method in a.resume_checkpoints:
+            parser.error('Invalid or duplicate resume-checkpoint method')
+        a.resume_checkpoints[method] = Path(source).resolve()
     if not a.methods or len(set(a.methods)) != len(a.methods) or any(x not in METHODS for x in a.methods):
         parser.error("methods must be a nonempty, nonrepeating subset of sc_tis,sc,tis,pg")
     if a.steps < 1:

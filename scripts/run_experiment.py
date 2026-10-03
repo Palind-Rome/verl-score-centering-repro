@@ -12,9 +12,12 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 import uuid
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))
+from sc_repro.checkpoints import complete_checkpoint, checkpoint_step, retain_checkpoints
 UPSTREAM_SHA = json.loads((REPO / "upstream.json").read_text())["commit"]
 METHODS = {"pg": (False, None), "tis": (False, "token"),
            "sc": (True, None), "sc_tis": (True, "token")}
@@ -28,6 +31,7 @@ def arguments() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--name", help="Optional readable SwanLab experiment name")
     p.add_argument("--steps", type=int)
+    p.add_argument("--resume-from-checkpoint", type=Path)
     p.add_argument("--gpus", help="Explicit comma-separated local GPU indices")
     p.add_argument("--root", type=Path, default=Path("/mnt/data2/Palind/score-centering-repro"))
     p.add_argument("--upstream", type=Path, default=REPO.parent / "verl")
@@ -46,7 +50,9 @@ def display_name(a: argparse.Namespace) -> str:
     method = {"pg": "PG", "tis": "TIS", "sc": "SC", "sc_tis": "SC+TIS"}[a.method]
     mode = "同步" if a.mode == "sync" else "异步"
     stage = {"smoke": "链路测试", "pilot": "试跑", "main": "对照实验"}[a.stage]
-    return f"Qwen3-4B · {method} · {mode}{stage} · Seed {a.seed}"
+    source = getattr(a, "resume_from_checkpoint", None)
+    suffix = f" · 续训{checkpoint_step(source)}→{a.steps or 500}" if source else ""
+    return f"Qwen3-4B · {method} · {mode}{stage}{suffix} · Seed {a.seed}"
 
 
 def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python: Path) -> list[str]:
@@ -161,12 +167,14 @@ def build_overrides(a: argparse.Namespace, run_dir: Path, ray_tmp: Path, python:
         "trainer.nnodes": 1,
         "trainer.n_gpus_per_node": trainer_gpus,
         "trainer.total_epochs": 100,
-        "trainer.total_training_steps": a.steps or {"smoke": 2, "pilot": 20, "main": 200}[a.stage],
+        "trainer.total_training_steps": a.steps or {"smoke": 2, "pilot": 20, "main": 500}[a.stage],
         "trainer.val_before_train": not smoke,
         "trainer.test_freq": 2 if smoke else 20,
         "trainer.save_freq": -1 if smoke else 20,
-        "trainer.max_actor_ckpt_to_keep": 3,
-        "trainer.resume_mode": "disable",
+        "trainer.max_actor_ckpt_to_keep": None,
+        "trainer.resume_mode": "resume_path" if getattr(a, "resume_from_checkpoint", None) else "disable",
+        "trainer.resume_from_path": str(a.resume_from_checkpoint) if getattr(a, "resume_from_checkpoint", None) else None,
+        "trainer.del_local_ckpt_after_load": False,
         "trainer.default_local_dir": str(run_dir / "checkpoints"),
         "trainer.validation_data_dir": str(run_dir / "validation"),
         "trainer.rollout_data_dir": str(run_dir / "rollouts"),
@@ -231,6 +239,17 @@ def main() -> int:
     a = arguments()
     a.root = a.root.resolve()
     a.upstream = a.upstream.resolve()
+    if a.resume_from_checkpoint:
+        a.resume_from_checkpoint = a.resume_from_checkpoint.resolve()
+        if a.stage != "main" or a.resume_from_checkpoint.parent.parent.parent != a.root / "runs":
+            raise ValueError("Resume must use a main-experiment checkpoint under ROOT/runs")
+        if not complete_checkpoint(a.resume_from_checkpoint):
+            raise ValueError("Resume checkpoint is missing model, optimizer, extra, dataloader or async queue files")
+        source_meta = json.loads((a.resume_from_checkpoint.parent.parent / "launch.json").read_text())
+        if source_meta["method"] != a.method or source_meta["seed"] != a.seed:
+            raise ValueError("Resume method and seed must match the source experiment")
+        if checkpoint_step(a.resume_from_checkpoint) >= (a.steps or 500):
+            raise ValueError("Total target steps must exceed the checkpoint step")
     python = a.python or a.root / "envs" / "verl" / "bin" / "python"
     run_id = f"{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}-{a.stage}-{a.mode}-{a.method}-s{a.seed}-{uuid.uuid4().hex[:6]}"
     run_dir = a.root / "runs" / run_id
@@ -284,10 +303,15 @@ def main() -> int:
         ray_tmp.symlink_to(run_dir / "ray", target_is_directory=True)
         dataset_manifest = a.root / "datasets" / "prepared" / "manifest.json"
         manifest_sha = hashlib.sha256(dataset_manifest.read_bytes()).hexdigest()
+        if a.resume_from_checkpoint and source_meta["dataset_manifest_sha256"] != manifest_sha:
+            raise RuntimeError("Dataset manifest changed since the source checkpoint")
         record = {"run_id": run_id, "display_name": display_name(a), "stage": a.stage, "method": a.method, "mode": a.mode,
                   "seed": a.seed, "command": command, "hardware": hardware,
                   "dataset_manifest_sha256": manifest_sha, "ray_tmp": str(ray_tmp),
-                  "note": "Smoke uses shorter responses and thinking disabled; not a benchmark result."}
+                  "start_step": checkpoint_step(a.resume_from_checkpoint) if a.resume_from_checkpoint else 0,
+                  "resume_from_checkpoint": str(a.resume_from_checkpoint) if a.resume_from_checkpoint else None,
+                  "checkpoint_retention": "latest3 union best2 by average AIME2024/AIME2025 mean@8",
+                  "note": "Asynchronous resume reissues unfinished prompts; not bitwise equivalent to uninterrupted sampling." if a.resume_from_checkpoint else "Smoke runs, when selected, are diagnostic only."}
         if (REPO / ".git").exists():
             record["reproduction_commit"] = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
@@ -299,7 +323,18 @@ def main() -> int:
             child = subprocess.Popen(command, cwd=REPO, env=env, stdout=log,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             (run_dir / "driver.pid").write_text(str(child.pid) + "\n")
-            code = child.wait()
+            while child.poll() is None:
+                try:
+                    retain_checkpoints(run_dir, apply=True)
+                except Exception as e:
+                    # Failing to prune must preserve data, not interrupt an otherwise healthy training run.
+                    print(f"CHECKPOINT_RETENTION_ERROR={type(e).__name__}: {e}", flush=True)
+                time.sleep(20)
+            code = child.returncode
+        try:
+            retain_checkpoints(run_dir, apply=True)
+        except Exception as e:
+            print(f"CHECKPOINT_RETENTION_ERROR={type(e).__name__}: {e}", flush=True)
         (run_dir / "exit.json").write_text(json.dumps({"returncode": code,
             "finished_utc": dt.datetime.now(dt.timezone.utc).isoformat()}) + "\n")
         print(f"EXIT_CODE={code}", flush=True)

@@ -92,8 +92,9 @@ Use `--method pg`, `tis`, `sc`, or `sc_tis`. `--dry-run` prints the command;
 `--config-only` resolves the Hydra configuration without starting Ray.
 
 To run the four formal arms sequentially, use `scripts/run_matrix.py`. It uses
-200 steps and seed 42 by default, in the order SC+TIS, SC, TIS, PG. Each arm
-starts from the base model. To adopt an already-running first formal arm:
+500 total steps and seed 42 by default, in the order SC+TIS, SC, TIS, PG.
+Arms start from the base model unless an explicit same-method checkpoint is
+provided. To adopt an already-running first formal arm:
 
 ```bash
 "$PY" scripts/run_matrix.py --root "$SC_ROOT" --upstream ../verl \
@@ -110,6 +111,24 @@ termination, only the exact recorded run's verified driver process group is
 signaled. The queue checks GPU availability before each subsequent run and never
 kills another task to acquire GPUs. Keep the launcher unchanged while the queue
 is active; its hash is checked throughout the run.
+
+Use `--resume-from-checkpoint /path/to/global_step_200 --steps 500` on the
+single-run launcher to restore model, optimizer, scheduler/RNG, dataloader and
+TransferQueue state, continuing at step 201 for 300 additional updates. A new
+output directory and SwanLab run preserve the continuation boundary. Pending
+asynchronous prompts are re-issued, so continuation is not bitwise equivalent
+to uninterrupted sampling. For the matrix, supply one or more
+`--resume-checkpoint sc_tis=/path/to/global_step_200` arguments (similarly for
+`sc`). Completion checking counts the resumed interval, not 500 new updates.
+
+Checkpoint retention is the **union of the latest three and best two** complete
+checkpoints across a run and its continuation lineage. Best means the arithmetic
+mean of AIME2024 and AIME2025 `mean@8`, with ties favoring the earlier checkpoint.
+There are no fixed-100-step archives or duplicate backup copies. Upstream rolling
+deletion is disabled; the launcher prunes only after durable saves and evaluation
+metrics are available. `retention-state.json` lists retained paths and
+`retention.jsonl` records deletions. Failed retention checks preserve files and
+emit an error rather than risk deleting a recovery point.
 
 Every run has a new output directory containing launch metadata, full console
 logs, `metrics.jsonl`, generated validation/rollout text, and checkpoints when
