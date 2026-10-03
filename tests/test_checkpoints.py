@@ -84,6 +84,12 @@ def test_missing_optimizer_is_not_complete(tmp_path):
     assert not complete_checkpoint(p)
 
 
+def test_unpublished_checkpoint_is_not_a_resume_source(tmp_path):
+    r=make_run(tmp_path);p=checkpoint(r,20,.5)
+    (p.parent/'latest_checkpointed_iteration.txt').unlink()
+    assert not complete_checkpoint(p)
+
+
 def test_continuation_requires_201_through_500_not_500_new_steps(tmp_path):
     data={'actor/pg_loss':0.,'actor/grad_norm':.1}
     (tmp_path/'metrics.jsonl').write_text(''.join(json.dumps({'step':s,'data':data})+'\n' for s in range(201,501)))

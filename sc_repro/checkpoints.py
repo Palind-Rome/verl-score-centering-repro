@@ -11,6 +11,11 @@ SCORE_KEYS = ("val-core/aime2024/acc/mean@8", "val-core/aime2025/acc/mean@8")
 
 
 def complete_checkpoint(path: Path) -> bool:
+    try:
+        if int((path.parent/'latest_checkpointed_iteration.txt').read_text().strip()) < checkpoint_step(path):
+            return False
+    except (FileNotFoundError, ValueError):
+        return False
     required = [path / "actor" / f"{kind}_world_size_4_rank_{rank}.pt"
                 for kind in ("model", "optim", "extra_state") for rank in range(4)]
     required += [path / "data.pt", path / "transfer_queue/controller_state.pkl",
